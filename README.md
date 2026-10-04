@@ -48,6 +48,10 @@ The following runs end red before the job reads any credential:
 
 A public run's log shows the verdict and the calling repository's own paths, nothing of the Hub.
 
+## Its own pull requests
+
+This repository is gated like any public caller. `.github/workflows/self-gate.yml` calls the copy here at `main` with `max_tier: open` and `allow_sensitivity: "O"`, so a pull request that changes the copy is checked by the copy already in force. For that call the repository holds the Hub reader credential, granted by name like any other public caller's. `gate / confidentiality-gate` is a required check on `main`.
+
 ## Changing it
 
 Do not edit the workflow here first. It changes in the Hub, and this copy follows in a pull request of its own. A check in the Hub fails while the two differ.
