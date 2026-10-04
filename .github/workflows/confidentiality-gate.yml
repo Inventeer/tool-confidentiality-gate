@@ -1,0 +1,184 @@
+name: Confidentiality Gate (reusable)
+
+# Reusable workflow that gates the pull requests of a repository of the
+# Inventeer or Inventeer-Management organization. It is a bootstrap: it refuses
+# a run that would hand a credential to a fork, mints its tokens, fetches the
+# gate's scripts and the calling repo, and hands over to
+# scripts/confidentiality-gate.py, where every decision the gate takes is made.
+#
+# This file exists in three repositories, byte for byte the same, because
+# GitHub shares a private reusable workflow with private repositories of its
+# own organization only. Change Inventeer/inventeer-hub first; the copies in
+# Inventeer-Management/identity-registry and Inventeer/tool-confidentiality-gate
+# follow, and a sync check fails while either differs.
+#
+# How to call it, the tokens it mints and the settings it depends on are
+# documented in the header of scripts/confidentiality-gate.py.
+
+on:
+  workflow_call:
+    inputs:
+      hub_reader_app_id:
+        description: "App ID of the Hub reader GitHub App"
+        required: true
+        type: string
+      org_app_id:
+        description: "App ID of the App installed on the caller's organization, when it is not the Hub reader App (required for Inventeer-Management)"
+        required: false
+        type: string
+        default: ""
+      allow_sensitivity:
+        description: "Sensitivity tiers permitted to rest in the calling repo, space- or comma-separated, from S, R and O. A public repo passes O"
+        required: false
+        type: string
+        default: "O"
+      company_tenant_direction:
+        description: "Direction for folders of the company's own tenant: none, or no-client-identifiers"
+        required: false
+        type: string
+        default: "none"
+      max_tier:
+        description: "Highest manifest tier the calling repo may hold: open, maintainer or leadership. Empty means no ceiling. A public repo passes open"
+        required: false
+        type: string
+        default: ""
+      scan:
+        description: "diff (the pull request's added lines, against its base) or all (every tracked file)"
+        required: false
+        type: string
+        default: "diff"
+      hub_ref:
+        description: "Hub ref the scripts are fetched from; match the ref in `uses:` when pinning"
+        required: false
+        type: string
+        default: "main"
+    secrets:
+      HUB_READER_APP_PRIVATE_KEY:
+        description: "Private key of the Hub reader GitHub App"
+        required: true
+      ORG_APP_PRIVATE_KEY:
+        description: "Private key of the App named by org_app_id"
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  confidentiality-gate:
+    # GitHub names the caller's required check "<caller job id> / confidentiality-gate".
+    name: confidentiality-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Refuse a fork's pull request and pull_request_target (before any credential)
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          CALLER_REPO: ${{ github.repository }}
+        run: |
+          if [ "$EVENT_NAME" = "pull_request_target" ]; then
+            echo "::error::The gate does not run on pull_request_target, which hands credentials to a run about a fork's pull request. Call it on pull_request."
+            exit 1
+          fi
+          if [ -n "$PR_NUMBER" ] && [ "$HEAD_REPO" != "$CALLER_REPO" ]; then
+            echo "::error::Pull request #$PR_NUMBER comes from ${HEAD_REPO:-a deleted fork}, not $CALLER_REPO. The gate reads no credential for a fork; push its branch to $CALLER_REPO to have it gated."
+            exit 1
+          fi
+          echo "The pull request's branch belongs to $CALLER_REPO."
+
+      - name: Mint Hub reader token (inventeer-hub, Contents read)
+        id: hub
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ inputs.hub_reader_app_id }}
+          private-key: ${{ secrets.HUB_READER_APP_PRIVATE_KEY }}
+          owner: Inventeer
+          repositories: inventeer-hub
+          permission-contents: read
+
+      - name: Fetch the gate scripts from the Hub (quiet, no Hub file or commit in the log)
+        env:
+          HUB_TOKEN: ${{ steps.hub.outputs.token }}
+          HUB_REF: ${{ inputs.hub_ref }}
+        run: |
+          set -euo pipefail
+          basic="$(printf 'x-access-token:%s' "$HUB_TOKEN" | base64 -w0)"
+          echo "::add-mask::$basic"
+          auth="AUTHORIZATION: basic $basic"
+          git -c init.defaultBranch=main init -q hub
+          git -C hub remote add origin https://github.com/Inventeer/inventeer-hub.git
+          git -C hub sparse-checkout set --no-cone /scripts/
+          if ! git -C hub -c http.extraheader="$auth" fetch -q --depth 1 --no-tags --filter=blob:none origin "$HUB_REF" \
+             || ! git -C hub -c http.extraheader="$auth" -c advice.detachedHead=false checkout -q FETCH_HEAD; then
+            echo "::error::Could not fetch the gate's scripts from the Hub at ref '$HUB_REF'."
+            exit 1
+          fi
+          test -f hub/scripts/confidentiality-gate.py || { echo "::error::The Hub at ref '$HUB_REF' holds no gate script."; exit 1; }
+          echo "Fetched the gate's scripts from the Hub at ref '$HUB_REF'."
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+        env:
+          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+      - name: Install dependencies
+        run: pip install --quiet pyyaml
+
+      - name: Check the calling organization (owner step)
+        id: scope
+        env:
+          CALLER_REPO: ${{ github.repository }}
+          ORG_APP_ID: ${{ inputs.org_app_id }}
+          ORG_KEY_PRESENT: ${{ secrets.ORG_APP_PRIVATE_KEY != '' }}
+        run: >-
+          python hub/scripts/confidentiality-gate.py scope
+          --repo "$CALLER_REPO"
+          --org-app-id "$ORG_APP_ID"
+          --org-key-present "$ORG_KEY_PRESENT"
+
+      - name: Mint organization token (calling repo, Members and Metadata read)
+        id: org
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ inputs.org_app_id || inputs.hub_reader_app_id }}
+          private-key: ${{ secrets.ORG_APP_PRIVATE_KEY || secrets.HUB_READER_APP_PRIVATE_KEY }}
+          owner: ${{ steps.scope.outputs.owner }}
+          repositories: ${{ steps.scope.outputs.name }}
+          permission-members: read
+          permission-metadata: read
+
+      - name: Check out the calling repo (full history for the diff base)
+        uses: actions/checkout@v4
+        with:
+          path: repo
+          fetch-depth: 0   # need origin/<base> reachable to diff added lines
+          persist-credentials: false
+        env:
+          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+      - name: Run the gate (self-tests, confidentiality lint, code-owner check; fail-closed)
+        env:
+          CALLER_REPO: ${{ github.repository }}
+          VISIBILITY: ${{ github.event.repository.visibility }}
+          ORG_APP_ID: ${{ inputs.org_app_id }}
+          ALLOW_SENSITIVITY: ${{ inputs.allow_sensitivity }}
+          COMPANY_TENANT_DIRECTION: ${{ inputs.company_tenant_direction }}
+          MAX_TIER: ${{ inputs.max_tier }}
+          SCAN: ${{ inputs.scan }}
+          BASE_REF: ${{ github.base_ref }}
+          CODEOWNERS_CHECK_TOKEN: ${{ steps.org.outputs.token }}
+        run: >-
+          python hub/scripts/confidentiality-gate.py run
+          --repo "$CALLER_REPO"
+          --visibility "$VISIBILITY"
+          --org-app-id "$ORG_APP_ID"
+          --repo-root repo
+          --hub-root hub
+          --scan "$SCAN"
+          --base-ref "$BASE_REF"
+          --allow-sensitivity "$ALLOW_SENSITIVITY"
+          --company-tenant-direction "$COMPANY_TENANT_DIRECTION"
+          --max-tier "$MAX_TIER"

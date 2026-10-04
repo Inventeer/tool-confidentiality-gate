@@ -1,0 +1,3 @@
+# Every path is owned by the Hub owners: the one workflow here is a copy of the
+# Hub's bootstrap and changes only when the Hub's does.
+* @Inventeer/role-hub-owners
