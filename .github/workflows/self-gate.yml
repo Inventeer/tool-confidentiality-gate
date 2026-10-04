@@ -1,0 +1,45 @@
+name: Confidentiality Gate
+
+# Gates this repository's own pull requests with the bootstrap it publishes.
+# .github/workflows/confidentiality-gate.yml beside this file is the public
+# copy that the public repositories of Inventeer call. It stays byte for byte
+# equal to the Hub's bootstrap, so the call that gates this repository lives
+# in this file instead.
+#
+# It calls the copy at main, never the pull request's own version, so a pull
+# request that changes the bootstrap is gated by the bootstrap already in force.
+#
+# This repo's settings: a public repository holds only the base tier, so
+# max_tier is open and allow_sensitivity is O, the only values the gate
+# accepts from a repository that is not private.
+#
+# Required status check: "gate / confidentiality-gate", registered in this
+# repo's "Confidentiality gate" ruleset for the default branch.
+#
+# Run by hand (Actions -> Confidentiality Gate -> Run workflow) to scan every
+# tracked file of the chosen branch instead of a pull request's added lines.
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Supersede in-flight runs when a PR is updated.
+concurrency:
+  group: confidentiality-gate-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    uses: Inventeer/tool-confidentiality-gate/.github/workflows/confidentiality-gate.yml@main
+    with:
+      hub_reader_app_id: ${{ vars.HUB_READER_APP_ID }}
+      allow_sensitivity: "O"
+      max_tier: open
+      company_tenant_direction: none
+      scan: ${{ github.event_name == 'workflow_dispatch' && 'all' || 'diff' }}
+    secrets:
+      HUB_READER_APP_PRIVATE_KEY: ${{ secrets.HUB_READER_APP_PRIVATE_KEY }}
