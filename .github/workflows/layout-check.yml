@@ -1,0 +1,165 @@
+name: Layout Check (reusable)
+
+# Reusable workflow that checks a pull request against the repository layout
+# (HUB_Repo_Layout_Standard section 9.3). It is a bootstrap: it refuses a run
+# that would hand a credential to a fork, mints a Hub reader token, fetches the
+# check script, the layout schema and the tenant configuration from the Hub,
+# checks out the calling repo, and hands over to scripts/layout-check.py, where
+# every rule is read from HUB_Repo_Layout_Schema.json and the repo's type from
+# the tenant configuration.
+#
+# Every repository of the Inventeer organization calls it with a thin caller,
+# the Hub included (.github/workflows/layout-lint.yml). A public repo cannot
+# call a private repo's reusable workflow, so the public repos call the copy in
+# Inventeer/tool-confidentiality-gate, kept equal to this file byte for byte by
+# .github/workflows/layout-check-public-sync.yml. Change this file first.
+#
+# MODES. warn (the default, for the layout transition) reports findings as
+# warning annotations and a job summary, and never fails: a credential, fetch
+# or script failure is reported as a warning too. block reports findings as
+# errors and fails the run on any finding or failure. The layout transition's
+# closing work turns the default to block.
+#
+# CALLER, minimal form:
+#   on:
+#     pull_request:
+#     workflow_dispatch:
+#   permissions:
+#     contents: read
+#   jobs:
+#     layout:
+#       uses: Inventeer/inventeer-hub/.github/workflows/layout-check.yml@main
+#       with:
+#         hub_reader_app_id: ${{ vars.HUB_READER_APP_ID }}
+#         scan: ${{ github.event_name == 'workflow_dispatch' && 'all' || 'diff' }}
+#       secrets:
+#         HUB_READER_APP_PRIVATE_KEY: ${{ secrets.HUB_READER_APP_PRIVATE_KEY }}
+# The check name is "<caller job id> / layout-check". Run by hand to check
+# every tracked file of the chosen branch, required folders included.
+
+on:
+  workflow_call:
+    inputs:
+      hub_reader_app_id:
+        description: "App ID of the Hub reader GitHub App"
+        required: true
+        type: string
+      mode:
+        description: "warn (report, never fail) or block (fail on any finding)"
+        required: false
+        type: string
+        default: "warn"
+      scan:
+        description: "diff (the pull request's files, against its base) or all (every tracked file)"
+        required: false
+        type: string
+        default: "diff"
+      hub_ref:
+        description: "Hub ref the check is fetched from; match the ref in `uses:` when pinning"
+        required: false
+        type: string
+        default: "main"
+    secrets:
+      HUB_READER_APP_PRIVATE_KEY:
+        description: "Private key of the Hub reader GitHub App"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  layout-check:
+    # GitHub names the caller's check "<caller job id> / layout-check".
+    name: layout-check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      MODE: ${{ inputs.mode }}
+    steps:
+      - name: Refuse a fork's pull request and pull_request_target (before any credential)
+        id: guard
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          CALLER_REPO: ${{ github.repository }}
+        run: |
+          level=warning; [ "$MODE" = "block" ] && level=error
+          reason=""
+          if [ "$EVENT_NAME" = "pull_request_target" ]; then
+            reason="The layout check does not run on pull_request_target, which hands credentials to a run about a fork's pull request. Call it on pull_request."
+          elif [ -n "$PR_NUMBER" ] && [ "$HEAD_REPO" != "$CALLER_REPO" ]; then
+            reason="Pull request #$PR_NUMBER comes from ${HEAD_REPO:-a deleted fork}, not $CALLER_REPO. The check reads no credential for a fork; push its branch to $CALLER_REPO to have it checked."
+          fi
+          if [ -n "$reason" ]; then
+            echo "::$level title=Layout check not run::$reason"
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            [ "$MODE" = "block" ] && exit 1
+            exit 0
+          fi
+          echo "ok=true" >> "$GITHUB_OUTPUT"
+
+      - name: Mint Hub reader token (inventeer-hub, Contents read)
+        id: hub
+        if: steps.guard.outputs.ok == 'true'
+        continue-on-error: ${{ inputs.mode != 'block' }}
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ inputs.hub_reader_app_id }}
+          private-key: ${{ secrets.HUB_READER_APP_PRIVATE_KEY }}
+          owner: Inventeer
+          repositories: inventeer-hub
+          permission-contents: read
+
+      - name: Fetch the check, the layout schema and the tenant configuration from the Hub
+        id: fetch
+        if: steps.hub.outcome == 'success'
+        continue-on-error: ${{ inputs.mode != 'block' }}
+        env:
+          HUB_TOKEN: ${{ steps.hub.outputs.token }}
+          HUB_REF: ${{ inputs.hub_ref }}
+        run: |
+          set -euo pipefail
+          basic="$(printf 'x-access-token:%s' "$HUB_TOKEN" | base64 -w0)"
+          echo "::add-mask::$basic"
+          auth="AUTHORIZATION: basic $basic"
+          git -c init.defaultBranch=main init -q hub
+          git -C hub remote add origin https://github.com/Inventeer/inventeer-hub.git
+          git -C hub sparse-checkout set --no-cone /scripts/layout-check.py /config/tenant.config.json /permanent-artifacts/workspace/HUB_Repo_Layout_Schema.json
+          if ! git -C hub -c http.extraheader="$auth" fetch -q --depth 1 --no-tags --filter=blob:none origin "$HUB_REF" \
+             || ! git -C hub -c http.extraheader="$auth" -c advice.detachedHead=false checkout -q FETCH_HEAD; then
+            echo "::error::Could not fetch the layout check from the Hub at ref '$HUB_REF'."
+            exit 1
+          fi
+          test -f hub/scripts/layout-check.py || { echo "::error::The Hub at ref '$HUB_REF' holds no layout check script."; exit 1; }
+          echo "Fetched the layout check from the Hub at ref '$HUB_REF'."
+
+      - name: Check out the calling repo (full history for the diff base)
+        if: steps.fetch.outcome == 'success'
+        uses: actions/checkout@v4
+        with:
+          path: repo
+          fetch-depth: 0   # need origin/<base> reachable to diff the pull request's files
+          persist-credentials: false
+        env:
+          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+      - name: Run the layout check
+        if: steps.fetch.outcome == 'success'
+        env:
+          CALLER_REPO: ${{ github.repository }}
+          SCAN: ${{ inputs.scan }}
+          BASE_REF: ${{ github.base_ref }}
+        run: >-
+          python3 hub/scripts/layout-check.py run
+          --repo "$CALLER_REPO"
+          --repo-root repo
+          --hub-root hub
+          --scan "$SCAN"
+          --base-ref "$BASE_REF"
+          --mode "$MODE"
+
+      - name: Report a check that could not run
+        if: steps.guard.outputs.ok == 'true' && steps.fetch.outcome != 'success'
+        run: |
+          echo "::warning title=Layout check not run::The Hub reader token or the Hub fetch failed, so this pull request was not checked. Check that this repo can read the variable HUB_READER_APP_ID and the secret HUB_READER_APP_PRIVATE_KEY."
