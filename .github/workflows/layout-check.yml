@@ -14,11 +14,11 @@ name: Layout Check (reusable)
 # Inventeer/tool-confidentiality-gate, kept equal to this file byte for byte by
 # .github/workflows/layout-check-public-sync.yml. Change this file first.
 #
-# MODES. warn (the default, for the layout transition) reports findings as
-# warning annotations and a job summary, and never fails: a credential, fetch
-# or script failure is reported as a warning too. block reports findings as
-# errors and fails the run on any finding or failure. The layout transition's
-# closing work turns the default to block.
+# MODES. block (the default) reports findings as errors and fails the run on
+# any finding or failure. warn reports findings as warning annotations and a
+# job summary, and never fails: a credential, fetch or script failure is
+# reported as a warning too. A caller passes `mode: warn` only while it brings
+# its repository to the layout.
 #
 # CALLER, minimal form:
 #   on:
@@ -45,10 +45,10 @@ on:
         required: true
         type: string
       mode:
-        description: "warn (report, never fail) or block (fail on any finding)"
+        description: "block (fail on any finding) or warn (report, never fail)"
         required: false
         type: string
-        default: "warn"
+        default: "block"
       scan:
         description: "diff (the pull request's files, against its base) or all (every tracked file)"
         required: false
