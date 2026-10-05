@@ -1,0 +1,41 @@
+name: Layout Check
+
+# Checks this repository's own pull requests against the repository layout
+# (HUB_Repo_Layout_Standard section 9.3) with the bootstrap it publishes.
+# .github/workflows/layout-check.yml beside this file is the public copy that
+# the public repositories of Inventeer call. It stays byte for byte equal to
+# the Hub's bootstrap, so the call that checks this repository lives in this
+# file instead.
+#
+# It calls the copy at main, never the pull request's own version, so a pull
+# request that changes the bootstrap is checked by the bootstrap already in
+# force. The rules live in the Hub: HUB_Repo_Layout_Schema.json, and this
+# repo's type in the tenant configuration.
+#
+# Blocking: a finding fails the check, so a pull request that breaks the
+# layout cannot pass it. Required status check: "layout / layout-check".
+#
+# Run by hand (Actions -> Layout Check -> Run workflow) to check every tracked
+# file of the chosen branch, required folders included.
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+# Supersede in-flight runs when a PR is updated.
+concurrency:
+  group: layout-check-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # Check name: "layout / layout-check".
+  layout:
+    uses: Inventeer/tool-confidentiality-gate/.github/workflows/layout-check.yml@main
+    with:
+      hub_reader_app_id: ${{ vars.HUB_READER_APP_ID }}
+      scan: ${{ github.event_name == 'workflow_dispatch' && 'all' || 'diff' }}
+    secrets:
+      HUB_READER_APP_PRIVATE_KEY: ${{ secrets.HUB_READER_APP_PRIVATE_KEY }}
