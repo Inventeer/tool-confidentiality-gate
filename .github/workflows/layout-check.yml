@@ -147,6 +147,16 @@ jobs:
         env:
           FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
+      # The self-hosted inventeer-arm64 image ships no Python; GitHub-hosted
+      # runners do. Set it up so the check runs the same on either.
+      - name: Set up Python
+        if: steps.fetch.outcome == 'success'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+        env:
+          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
       - name: Run the layout check
         if: steps.fetch.outcome == 'success'
         env:
