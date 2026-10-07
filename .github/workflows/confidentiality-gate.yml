@@ -67,7 +67,10 @@ jobs:
   confidentiality-gate:
     # GitHub names the caller's required check "<caller job id> / confidentiality-gate".
     name: confidentiality-gate
-    runs-on: ubuntu-latest
+    # Runner follows the caller: a private repository of Inventeer runs on the
+    # self-hosted inventeer-arm64 pool; a public repository or another
+    # organization runs on ubuntu-latest, because the pool serves neither.
+    runs-on: ${{ (github.repository_owner == 'Inventeer' && github.event.repository.private) && 'inventeer-arm64' || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - name: Refuse a fork's pull request and pull_request_target (before any credential)
