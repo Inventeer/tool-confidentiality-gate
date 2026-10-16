@@ -3,8 +3,9 @@ name: Layout Check (reusable)
 # Reusable workflow that checks a pull request against the repository layout
 # (HUB_Repo_Layout_Standard section 9.3). It is a bootstrap: it refuses a run
 # that would hand a credential to a fork, mints a Hub reader token, fetches the
-# check script, the layout schema and the tenant configuration from the Hub,
-# checks out the calling repo, and hands over to scripts/layout-check.py, where
+# check script and the layout schema from the Hub and the tenant configuration
+# from shared-ops, checks out the calling repo, and hands over to
+# scripts/layout-check.py, where
 # every rule is read from HUB_Repo_Layout_Schema.json and the repo's type from
 # the tenant configuration.
 #
@@ -102,7 +103,7 @@ jobs:
           fi
           echo "ok=true" >> "$GITHUB_OUTPUT"
 
-      - name: Mint Hub reader token (inventeer-hub, Contents read)
+      - name: Mint Hub reader token (inventeer-hub and shared-ops, Contents read)
         id: hub
         if: steps.guard.outputs.ok == 'true'
         continue-on-error: ${{ inputs.mode != 'block' }}
@@ -111,10 +112,10 @@ jobs:
           app-id: ${{ inputs.hub_reader_app_id }}
           private-key: ${{ secrets.HUB_READER_APP_PRIVATE_KEY }}
           owner: Inventeer
-          repositories: inventeer-hub
+          repositories: inventeer-hub,shared-ops
           permission-contents: read
 
-      - name: Fetch the check, the layout schema and the tenant configuration from the Hub
+      - name: Fetch the check and the layout schema from the Hub, the tenant configuration from shared-ops
         id: fetch
         if: steps.hub.outcome == 'success'
         continue-on-error: ${{ inputs.mode != 'block' }}
@@ -128,7 +129,7 @@ jobs:
           auth="AUTHORIZATION: basic $basic"
           git -c init.defaultBranch=main init -q hub
           git -C hub remote add origin https://github.com/Inventeer/inventeer-hub.git
-          git -C hub sparse-checkout set --no-cone /scripts/layout-check.py /config/tenant.config.json /permanent-artifacts/workspace/HUB_Repo_Layout_Schema.json
+          git -C hub sparse-checkout set --no-cone /scripts/layout-check.py /permanent-artifacts/workspace/HUB_Repo_Layout_Schema.json
           if ! git -C hub -c http.extraheader="$auth" fetch -q --depth 1 --no-tags --filter=blob:none origin "$HUB_REF" \
              || ! git -C hub -c http.extraheader="$auth" -c advice.detachedHead=false checkout -q FETCH_HEAD; then
             echo "::error::Could not fetch the layout check from the Hub at ref '$HUB_REF'."
@@ -136,6 +137,16 @@ jobs:
           fi
           test -f hub/scripts/layout-check.py || { echo "::error::The Hub at ref '$HUB_REF' holds no layout check script."; exit 1; }
           echo "Fetched the layout check from the Hub at ref '$HUB_REF'."
+          git -c init.defaultBranch=main init -q shared-ops
+          git -C shared-ops remote add origin https://github.com/Inventeer/shared-ops.git
+          git -C shared-ops sparse-checkout set --no-cone /config/tenant.config.json
+          if ! git -C shared-ops -c http.extraheader="$auth" fetch -q --depth 1 --no-tags --filter=blob:none origin main \
+             || ! git -C shared-ops -c http.extraheader="$auth" -c advice.detachedHead=false checkout -q FETCH_HEAD; then
+            echo "::error::Could not fetch the tenant configuration from shared-ops."
+            exit 1
+          fi
+          test -f shared-ops/config/tenant.config.json || { echo "::error::shared-ops holds no config/tenant.config.json."; exit 1; }
+          echo "Fetched the tenant configuration from shared-ops."
 
       - name: Check out the calling repo (full history for the diff base)
         if: steps.fetch.outcome == 'success'
@@ -168,6 +179,7 @@ jobs:
           --repo "$CALLER_REPO"
           --repo-root repo
           --hub-root hub
+          --config shared-ops/config/tenant.config.json
           --scan "$SCAN"
           --base-ref "$BASE_REF"
           --mode "$MODE"
