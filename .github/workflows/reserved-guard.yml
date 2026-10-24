@@ -1,0 +1,82 @@
+name: Reserved Guard (reusable)
+
+# The one definition of the reserved-path guard (HUB_Bot_Work_Protocol_Standard,
+# section 2.12) for every repository of the Inventeer organization, public and
+# private. It fails a pull request that touches a path the founder reserves, adds
+# the founder-review label and raises one Slack alert. The decision is made in
+# .github/reserved-guard/guard.py, which reads the pull request through the API
+# and never checks out or runs the pull request's code.
+#
+# Call it from .github/workflows/reserved-guard.yml of the repository:
+#
+#   on:
+#     pull_request:
+#       types: [opened, synchronize, reopened, edited]
+#   permissions:
+#     contents: read
+#     pull-requests: write
+#   jobs:
+#     guard:
+#       uses: Inventeer/tool-confidentiality-gate/.github/workflows/reserved-guard.yml@main
+#       secrets:
+#         SLACK_WEBHOOK_FOUNDER_REVIEW: ${{ secrets.SLACK_WEBHOOK_FOUNDER_REVIEW }}
+#
+# The required status check is named "guard / reserved-guard", registered in the
+# organization's "Reserved guard" ruleset for the default branch, with no bypass.
+
+on:
+  workflow_call:
+    inputs:
+      founder_owners:
+        description: "CODEOWNERS owners that count as the founder, space separated"
+        required: false
+        type: string
+        default: "@Inventeer/role-founder @Inventeer/role-leadership @Inventeer-Management/role-founder"
+    secrets:
+      SLACK_WEBHOOK_FOUNDER_REVIEW:
+        description: "Incoming webhook that delivers the alert to the founder"
+        required: false
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  reserved-guard:
+    runs-on: ${{ (github.repository_owner == 'Inventeer' && github.event.repository.private) && 'inventeer-arm64' || 'ubuntu-latest' }}
+    timeout-minutes: 10
+    steps:
+      - name: Refuse anything but a pull request
+        if: github.event_name != 'pull_request'
+        run: |
+          echo "::error::reserved-guard runs on pull_request only, not ${{ github.event_name }}"
+          exit 2
+
+      - name: Fetch the guard
+        uses: actions/checkout@v4
+        with:
+          repository: Inventeer/tool-confidentiality-gate
+          ref: main
+          path: reserved-guard-src
+          sparse-checkout: .github/reserved-guard
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the pinned dependencies
+        run: python -m pip install --quiet --requirement reserved-guard-src/.github/reserved-guard/requirements.txt
+
+      - name: Decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
+          FOUNDER_OWNERS: ${{ inputs.founder_owners }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_FOUNDER_REVIEW }}
+        run: python -I reserved-guard-src/.github/reserved-guard/guard.py
