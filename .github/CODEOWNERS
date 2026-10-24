@@ -1,3 +1,4 @@
-# Every path is owned by the Hub owners: the one workflow here is a copy of the
-# Hub's bootstrap and changes only when the Hub's does.
+# Every path is owned by the Hub owners: the confidentiality workflow here is a
+# copy of the Hub's bootstrap and changes only when the Hub's does, and the
+# reserved-path guard is defined here once, for every repository.
 * @Inventeer/role-hub-owners

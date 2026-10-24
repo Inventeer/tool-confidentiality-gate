@@ -1,0 +1,37 @@
+name: Reserved Guard Tests
+
+# Runs the offline tests of the reserved-path guard on every pull request that
+# changes it. The tests read no network and no credential.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/reserved-guard/**"
+      - ".github/workflows/reserved-guard.yml"
+      - ".github/workflows/reserved-guard-tests.yml"
+
+concurrency:
+  group: reserved-guard-tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: python -m pip install --quiet --requirement .github/reserved-guard/requirements.txt
+
+      - run: python test_guard.py
+        working-directory: .github/reserved-guard

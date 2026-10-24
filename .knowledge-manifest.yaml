@@ -12,4 +12,4 @@ audience:
 inherit: true
 owner: INFRA
 effective_date: 2026-10-03
-notes: "Public copy of the confidentiality gate's bootstrap and its README only."
+notes: "Public copy of the confidentiality gate's bootstrap, the reserved-path guard and their README only."
