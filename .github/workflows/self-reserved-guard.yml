@@ -1,0 +1,30 @@
+name: Reserved Guard
+
+# Calls the one definition of the reserved-path guard on every pull request
+# (HUB_Bot_Work_Protocol_Standard section 2.12). The definition, its script and
+# every rule live in Inventeer/tool-confidentiality-gate, so this caller passes
+# no setting of its own. A pull request that touches a path the founder reserves
+# fails the check, gets the founder-review label and raises one Slack alert.
+#
+# Required status check: "guard / reserved-guard", registered in the
+# organization's "Reserved guard" ruleset for the default branch, with no bypass.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+# Supersede in-flight runs when a PR is updated.
+concurrency:
+  group: reserved-guard-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  # Check name: "guard / reserved-guard".
+  guard:
+    uses: Inventeer/tool-confidentiality-gate/.github/workflows/reserved-guard.yml@main
+    secrets:
+      SLACK_WEBHOOK_FOUNDER_REVIEW: ${{ secrets.SLACK_WEBHOOK_FOUNDER_REVIEW }}
