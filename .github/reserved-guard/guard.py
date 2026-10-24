@@ -21,8 +21,15 @@ What it blocks (the table of section 2.12, rule 2):
 A blocked pull request gets the founder-review label, one comment and one Slack
 alert, and the check fails. The guard merges nothing and approves nothing.
 
+The guard decides only for the pull requests of the authors it guards: the bots
+listed in GUARDED_AUTHORS, whose merge it gates (section 2.7, rule 3). A pull
+request of any other author, a person included, passes at once: a person's
+change is governed by the code owners' review, and a required check that failed
+it would stop the team's own work.
+
 Inputs (environment): GH_TOKEN, REPO, PR_NUMBER, BASE_REF, HEAD_SHA, PR_AUTHOR,
-PR_AUTHOR_TYPE, FOUNDER_OWNERS (space separated), SLACK_WEBHOOK_URL (optional).
+GUARDED_AUTHORS (space separated logins), FOUNDER_OWNERS (space separated),
+SLACK_WEBHOOK_URL (optional).
 Exit code: 0 pass, 1 blocked, 2 the guard could not decide (fails closed).
 """
 
@@ -226,6 +233,11 @@ def _paths(f: dict) -> list[str]:
     if f.get("previous_filename"):
         out.append(f["previous_filename"])
     return out
+
+
+def is_guarded(author: str, guarded: list[str]) -> bool:
+    """True when the pull request's author is one of the bots the guard gates."""
+    return author.strip().lower() in {g.strip().lower() for g in guarded if g.strip()}
 
 
 def path_findings(f: dict, author_is_bot: bool) -> list[Finding]:
@@ -446,13 +458,16 @@ def clear_label_if_ours(gh: GitHub, number: str) -> None:
 
 def main(env=os.environ) -> int:
     try:
+        author = env.get("PR_AUTHOR", "")
+        if not is_guarded(author, env.get("GUARDED_AUTHORS", "").split()):
+            print(f"reserved-guard: passed, {author or 'this author'} is not a guarded bot")
+            return 0
         repo, number = env["REPO"], env["PR_NUMBER"]
         if not number:
             raise GuardError("the guard runs on a pull request only")
         gh = GitHub(repo, env["GH_TOKEN"])
         head_sha, base_ref = env["HEAD_SHA"], env["BASE_REF"]
-        author = env.get("PR_AUTHOR", "")
-        author_is_bot = env.get("PR_AUTHOR_TYPE", "") == "Bot" or author.endswith("[bot]")
+        author_is_bot = True  # a guarded author is a bot, so its own manifest is reserved
         founders = env.get("FOUNDER_OWNERS", "").split()
 
         files = gh.paged(f"/pulls/{number}/files")

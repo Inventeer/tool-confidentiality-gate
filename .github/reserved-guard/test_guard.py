@@ -230,6 +230,26 @@ class CodeOwners(unittest.TestCase):
         self.assertEqual(rows(found), {guard.ROW_CODEOWNERS_FOUNDER})
 
 
+class GuardedAuthors(unittest.TestCase):
+    GUARDED = ["clara-foster-inventeer[bot]"]
+
+    def test_only_a_listed_bot_is_guarded(self):
+        self.assertTrue(guard.is_guarded("clara-foster-inventeer[bot]", self.GUARDED))
+        self.assertTrue(guard.is_guarded("Clara-Foster-Inventeer[bot]", self.GUARDED))
+
+    def test_a_person_or_another_bot_is_not_guarded(self):
+        for author in ("mayconcsantos", "dependabot[bot]", "github-actions[bot]", ""):
+            self.assertFalse(guard.is_guarded(author, self.GUARDED), author)
+
+    def test_an_empty_list_guards_nobody(self):
+        self.assertFalse(guard.is_guarded("clara-foster-inventeer[bot]", []))
+        self.assertFalse(guard.is_guarded("clara-foster-inventeer[bot]", [""]))
+
+    def test_main_passes_an_unguarded_author_without_calling_the_api(self):
+        env = {"PR_AUTHOR": "mayconcsantos", "GUARDED_AUTHORS": "clara-foster-inventeer[bot]"}
+        self.assertEqual(guard.main(env), 0)
+
+
 class Reporting(unittest.TestCase):
     def test_the_alert_names_repository_pull_request_and_path(self):
         findings = [guard.Finding(guard.ROW_TIER_S, "finance/<b>&.md")]

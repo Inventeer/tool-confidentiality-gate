@@ -27,6 +27,11 @@ name: Reserved Guard (reusable)
 on:
   workflow_call:
     inputs:
+      guarded_authors:
+        description: "Logins of the bots whose pull requests the guard decides, space separated. Any other author passes"
+        required: false
+        type: string
+        default: "clara-foster-inventeer[bot]"
       founder_owners:
         description: "CODEOWNERS owners that count as the founder, space separated"
         required: false
@@ -43,6 +48,10 @@ permissions:
 
 jobs:
   reserved-guard:
+    # A pull request of an author the guard does not gate skips the job: no runner
+    # starts and no package is installed, and a skipped job satisfies a required
+    # check. guard.py repeats the test, so the decision never rests on this line.
+    if: contains(format(' {0} ', inputs.guarded_authors), format(' {0} ', github.event.pull_request.user.login))
     runs-on: ${{ (github.repository_owner == 'Inventeer' && github.event.repository.private) && 'inventeer-arm64' || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
@@ -76,7 +85,7 @@ jobs:
           BASE_REF: ${{ github.event.pull_request.base.ref }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
-          PR_AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
+          GUARDED_AUTHORS: ${{ inputs.guarded_authors }}
           FOUNDER_OWNERS: ${{ inputs.founder_owners }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_FOUNDER_REVIEW }}
         run: python -I reserved-guard-src/.github/reserved-guard/guard.py
