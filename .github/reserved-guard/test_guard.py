@@ -1,5 +1,6 @@
 """Offline tests for guard.py: one case per row of the table, no network."""
 
+import json
 import os
 import sys
 import unittest
@@ -253,16 +254,36 @@ class GuardedAuthors(unittest.TestCase):
 class Reporting(unittest.TestCase):
     def test_the_alert_names_repository_pull_request_and_path(self):
         findings = [guard.Finding(guard.ROW_TIER_S, "finance/<b>&.md")]
-        text = guard.alert_text("Inventeer/sandbox-demo", "12", "clara[bot]", findings)
-        self.assertIn("Inventeer/sandbox-demo", text)
-        self.assertIn("https://github.com/Inventeer/sandbox-demo/pull/12", text)
-        self.assertIn("finance/&lt;b&gt;&amp;.md", text)
-        self.assertNotIn("<b>", text)
+        payload = guard.alert_payload("Inventeer/sandbox-demo", "12", "clara[bot]", findings)
+        flat = json.dumps(payload)
+        self.assertIn("Inventeer/sandbox-demo", flat)
+        self.assertIn("https://github.com/Inventeer/sandbox-demo/pull/12", flat)
+        self.assertIn("finance/&lt;b&gt;&amp;.md", flat)
+        self.assertNotIn("<b>", flat)
+        self.assertEqual(payload["text"], "Founder review needed: Inventeer/sandbox-demo#12 by clara[bot]")
+
+    def test_the_alert_is_a_card_with_a_title_fields_and_a_button(self):
+        findings = [guard.Finding(guard.ROW_WORKFLOWS, ".github/workflows/ci.yml")]
+        blocks = guard.alert_payload("Inventeer/x", "3", "a", findings)["blocks"]
+        self.assertEqual([b["type"] for b in blocks], ["header", "section", "section", "actions", "context"])
+        self.assertEqual(len(blocks[1]["fields"]), 3)
+        self.assertEqual(blocks[3]["elements"][0]["url"], "https://github.com/Inventeer/x/pull/3")
+
+    def test_the_reasons_are_grouped_by_row_and_a_backtick_cannot_break_the_path(self):
+        findings = [
+            guard.Finding(guard.ROW_TIER_S, "finance/a.md"),
+            guard.Finding(guard.ROW_WORKFLOWS, ".github/workflows/`x`.yml"),
+            guard.Finding(guard.ROW_TIER_S, "people/b.md"),
+        ]
+        text = guard.alert_payload("Inventeer/x", "1", "a", findings)["blocks"][2]["text"]["text"]
+        self.assertEqual(text.count("*Finance, people, hiring, contracts and payments data*"), 1)
+        self.assertIn("`.github/workflows/'x'.yml`", text)
 
     def test_the_alert_is_capped(self):
         findings = [guard.Finding(guard.ROW_TIER_S, f"finance/{i}.md") for i in range(40)]
-        text = guard.alert_text("Inventeer/x", "1", "a", findings)
+        text = guard.alert_payload("Inventeer/x", "1", "a", findings)["blocks"][2]["text"]["text"]
         self.assertIn("and 28 more", text)
+        self.assertLess(len(text), 3000)
 
     def test_the_digest_ignores_order_and_changes_with_the_findings(self):
         a = guard.Finding(guard.ROW_TIER_S, "finance/a.md")

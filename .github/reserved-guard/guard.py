@@ -375,23 +375,79 @@ def slack_escape(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def alert_text(repo: str, number: str, author: str, findings: list[Finding]) -> str:
-    url = f"https://github.com/{repo}/pull/{number}"
-    shown = findings[:SLACK_LINES]
-    lines = [
-        f"reserved-guard blocked a pull request in {slack_escape(repo)}",
-        f"<{url}|#{number}> by {slack_escape(author)} needs the founder's review.",
-    ]
-    lines += [f"• {slack_escape(f.line())}" for f in shown]
-    if len(findings) > len(shown):
-        lines.append(f"• and {len(findings) - len(shown)} more")
-    return "\n".join(lines)
+def _pr_url(repo: str, number: str) -> str:
+    return f"https://github.com/{repo}/pull/{number}"
 
 
-def post_slack(webhook: str, text: str) -> None:
+def alert_text(repo: str, number: str, author: str) -> str:
+    """The plain-text fallback: what a notification and a client without cards show."""
+    return f"Founder review needed: {repo}#{number} by {author}"
+
+
+def alert_payload(repo: str, number: str, author: str, findings: list[Finding]) -> dict:
+    """The Slack card: a title, three fields, the reasons grouped by row and a button."""
+    url = _pr_url(repo, number)
+    groups: dict[str, list[Finding]] = {}
+    for item in findings:
+        groups.setdefault(item.row, []).append(item)
+
+    lines: list[str] = []
+    shown = 0
+    for row, items in groups.items():
+        if shown >= SLACK_LINES:
+            break
+        lines.append(f"*{slack_escape(row[:1].upper() + row[1:])}*")
+        for item in items:
+            if shown >= SLACK_LINES:
+                break
+            path = slack_escape(item.path).replace("`", "'")
+            detail = f" _({slack_escape(item.detail)})_" if item.detail else ""
+            lines.append(f"\u2022 `{path}`{detail}")
+            shown += 1
+    if len(findings) > shown:
+        lines.append(f"_and {len(findings) - shown} more_")
+
+    return {
+        "text": alert_text(repo, number, author),
+        "blocks": [
+            {"type": "header", "text": {"type": "plain_text", "text": "Founder review needed"}},
+            {
+                "type": "section",
+                "fields": [
+                    {"type": "mrkdwn", "text": f"*Repository*\n{slack_escape(repo)}"},
+                    {"type": "mrkdwn", "text": f"*Pull request*\n<{url}|#{number}>"},
+                    {"type": "mrkdwn", "text": f"*Opened by*\n{slack_escape(author)}"},
+                ],
+            },
+            {"type": "section", "text": {"type": "mrkdwn", "text": "\n".join(lines)[:2900]}},
+            {
+                "type": "actions",
+                "elements": [
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "Review pull request"},
+                        "url": url,
+                        "style": "primary",
+                    }
+                ],
+            },
+            {
+                "type": "context",
+                "elements": [
+                    {
+                        "type": "mrkdwn",
+                        "text": "reserved-guard blocked this pull request. It touches a path the founder reserves.",
+                    }
+                ],
+            },
+        ],
+    }
+
+
+def post_slack(webhook: str, payload: dict) -> None:
     req = urllib.request.Request(
         webhook,
-        data=json.dumps({"text": text}).encode(),
+        data=json.dumps(payload).encode(),
         headers={"Content-Type": "application/json"},
         method="POST",
     )
@@ -433,7 +489,7 @@ def act_on_block(gh: GitHub, number: str, author: str, findings, webhook: str) -
             return
         gh.api("POST", f"/issues/{number}/comments", {"body": comment_body(findings, marker)})
         if webhook:
-            post_slack(webhook, alert_text(gh.repo, number, author, findings))
+            post_slack(webhook, alert_payload(gh.repo, number, author, findings))
         else:
             print("::warning::reserved-guard: no Slack webhook secret, no alert sent")
     except (urllib.error.URLError, OSError) as err:
