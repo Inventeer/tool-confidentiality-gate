@@ -230,6 +230,22 @@ class CodeOwners(unittest.TestCase):
         found = run([f("docs/plan.md", "renamed", previous="strategy/plan.md")], codeowners=self.OWNERS)
         self.assertEqual(rows(found), {guard.ROW_CODEOWNERS_FOUNDER})
 
+    FOUNDER_CATCH_ALL = (
+        "* @Inventeer/role-leadership\n"
+        "/strategy/ @Inventeer/role-leadership\n"
+    )
+
+    def test_a_path_won_by_the_founders_catch_all_passes(self):
+        self.assertEqual(run([f("src/app.py")], codeowners=self.FOUNDER_CATCH_ALL), [])
+
+    def test_a_narrower_founder_rule_still_blocks_under_a_founder_catch_all(self):
+        found = run([f("strategy/plan.md")], codeowners=self.FOUNDER_CATCH_ALL)
+        self.assertEqual(rows(found), {guard.ROW_CODEOWNERS_FOUNDER})
+
+    def test_the_catch_all_exception_leaves_the_other_rows(self):
+        found = run([f(".github/workflows/ci.yml")], codeowners=self.FOUNDER_CATCH_ALL)
+        self.assertEqual(rows(found), {guard.ROW_WORKFLOWS})
+
 
 class GuardedAuthors(unittest.TestCase):
     GUARDED = ["clara-foster-inventeer[bot]"]

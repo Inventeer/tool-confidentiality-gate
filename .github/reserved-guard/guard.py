@@ -16,7 +16,9 @@ What it blocks (the table of section 2.12, rule 2):
      changed scope.does line (a part that only removes access passes)
   6. finance/**, people/**, hiring/**, contracts/** and payments/**
   7. AGENTS.md, CLAUDE.md, rules/** and every HUB_ artifact
-  8. any path a CODEOWNERS rule assigns to the founder
+  8. any path a CODEOWNERS rule assigns to the founder, except by the
+     catch-all rule *: it names no path, and the ruleset's code-owner review
+     already requires the founder's approval everywhere it applies
 
 A blocked pull request gets the founder-review label, one comment and one Slack
 alert, and the check fails. The guard merges nothing and approves nothing.
@@ -55,6 +57,7 @@ PR_FILES_CAP = 3000
 SLACK_LINES = 12
 
 HUB_ROOT_DIRS = ("finance", "people", "hiring", "contracts", "payments")
+CODEOWNERS_CATCH_ALL = "*"
 
 ROW_WORKFLOWS = "workflows and CODEOWNERS files"
 ROW_PREAPPROVALS = "the founder's pre-approvals file"
@@ -315,7 +318,8 @@ def evaluate(
         for f in files:
             for path in _paths(f):
                 hit = codeowners_rule_for(path, rules)
-                if hit and founders.intersection(hit[1]):
+                # The catch-all names no path, so it reserves none (section 2.12).
+                if hit and hit[0] != CODEOWNERS_CATCH_ALL and founders.intersection(hit[1]):
                     found.append(Finding(ROW_CODEOWNERS_FOUNDER, path, f"rule {hit[0]}"))
 
     unique = {}
