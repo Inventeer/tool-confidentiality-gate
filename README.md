@@ -60,7 +60,7 @@ Do not edit the bootstrap here first. It changes in the Hub, and this copy follo
 
 `.github/workflows/reserved-guard.yml` is the one definition of the `reserved-guard` check of `HUB_Bot_Work_Protocol_Standard` (section 2.12), for every repository of the `Inventeer` organization that a bot's GitHub App is installed on. It lives here because this repository is public, and a public repository's workflow is the only kind both public and private repositories can call.
 
-The check decides only for the pull requests of the bots it guards: the logins in the `guarded_authors` input, today the Executive Assistant's App, `clara-foster-inventeer[bot]`. A bot joins the guard by one pull request that adds its login to that default. A pull request of any other author, a person included, passes at once, because a person's change is governed by the code owners' review and a required check that failed it would stop the team's own work.
+The check decides only for the pull requests of the bots it guards: the logins in the `guarded_authors` input, today the Executive Assistant's App, `clara-foster-inventeer[bot]`, and the Chief of Staff's App, `inventeer-grok-founder-pr[bot]`. A bot joins the guard by one pull request that adds its login to that default. A pull request of any other author, a person included, passes at once, because a person's change is governed by the code owners' review and a required check that failed it would stop the team's own work.
 
 For a guarded author, the check fails the pull request when it touches a path the founder reserves:
 
