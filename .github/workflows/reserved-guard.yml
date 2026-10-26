@@ -31,7 +31,7 @@ on:
         description: "Logins of the bots whose pull requests the guard decides, space separated. Any other author passes"
         required: false
         type: string
-        default: "clara-foster-inventeer[bot]"
+        default: "clara-foster-inventeer[bot] inventeer-grok-founder-pr[bot]"
       founder_owners:
         description: "CODEOWNERS owners that count as the founder, space separated"
         required: false

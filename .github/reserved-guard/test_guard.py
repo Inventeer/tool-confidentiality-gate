@@ -2,6 +2,8 @@
 
 import json
 import os
+import pathlib
+import re
 import sys
 import unittest
 
@@ -248,11 +250,21 @@ class CodeOwners(unittest.TestCase):
 
 
 class GuardedAuthors(unittest.TestCase):
-    GUARDED = ["clara-foster-inventeer[bot]"]
+    GUARDED = ["clara-foster-inventeer[bot]", "inventeer-grok-founder-pr[bot]"]
 
     def test_only_a_listed_bot_is_guarded(self):
         self.assertTrue(guard.is_guarded("clara-foster-inventeer[bot]", self.GUARDED))
         self.assertTrue(guard.is_guarded("Clara-Foster-Inventeer[bot]", self.GUARDED))
+
+    def test_the_chief_of_staffs_app_is_guarded(self):
+        self.assertTrue(guard.is_guarded("inventeer-grok-founder-pr[bot]", self.GUARDED))
+
+    def test_the_workflow_default_guards_every_listed_bot(self):
+        workflow = pathlib.Path(__file__).resolve().parents[1] / "workflows" / "reserved-guard.yml"
+        match = re.search(r'guarded_authors:.*?default:\s*"([^"]*)"', workflow.read_text(encoding="utf-8"), re.S)
+        self.assertIsNotNone(match)
+        for login in self.GUARDED:
+            self.assertIn(login, match.group(1).split())
 
     def test_a_person_or_another_bot_is_not_guarded(self):
         for author in ("mayconcsantos", "dependabot[bot]", "github-actions[bot]", ""):
