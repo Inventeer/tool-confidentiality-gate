@@ -73,6 +73,8 @@ For a guarded author, the check fails the pull request when it touches a path th
 - `AGENTS.md`, `CLAUDE.md`, `rules/**` and every `HUB_` artifact;
 - any path a `CODEOWNERS` rule of the base branch assigns to the founder.
 
+In a repository listed in `.github/reserved-guard/every-path-reserved.txt`, today `operations-web`, `github-actions` and `tool-confidentiality-gate`, every path a guarded bot's pull request touches is reserved as well (section 2.12, rule 6), so the founder's merge through the `role-founder` bypass is his approval there. A person's pull request in those repositories is never held. The guard reads the list from its own folder, so a caller sets nothing for it, and adding a repository is a pull request that a Hub owner merges.
+
 A blocked pull request gets the `founder-review` label, one comment and one Slack alert naming the repository, the pull request and the path or field. The check merges nothing and approves nothing. It reads the pull request through the API and never checks out or runs its code. When it cannot decide, it fails.
 
 ### Calling it
