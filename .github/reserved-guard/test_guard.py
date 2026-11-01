@@ -5,7 +5,9 @@ import os
 import pathlib
 import re
 import sys
+import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -48,7 +50,7 @@ def manifest(**changes):
     return text
 
 
-def run(files, bot=False, base=None, head=None, codeowners=None):
+def run(files, bot=False, base=None, head=None, codeowners=None, every_path=False):
     return guard.evaluate(
         files,
         author_is_bot=bot,
@@ -56,6 +58,7 @@ def run(files, bot=False, base=None, head=None, codeowners=None):
         read_base=lambda p: base,
         read_head=lambda p: head,
         base_codeowners=codeowners,
+        every_path=every_path,
     )
 
 
@@ -277,6 +280,129 @@ class GuardedAuthors(unittest.TestCase):
     def test_main_passes_an_unguarded_author_without_calling_the_api(self):
         env = {"PR_AUTHOR": "mayconcsantos", "GUARDED_AUTHORS": "clara-foster-inventeer[bot]"}
         self.assertEqual(guard.main(env), 0)
+
+
+class EveryPath(unittest.TestCase):
+    """Section 2.12, rule 6: every path of a listed repository is reserved for a guarded bot."""
+
+    LISTED = {"inventeer/operations-web", "inventeer/github-actions", "inventeer/tool-confidentiality-gate"}
+
+    def test_the_list_names_the_three_repositories_and_no_other(self):
+        self.assertEqual(guard.load_every_path_repositories(), self.LISTED)
+
+    def test_listing_ignores_case_comments_and_blank_lines(self):
+        listed = guard.every_path_repositories("# note\n\nInventeer/Operations-Web  # web\n")
+        self.assertEqual(listed, {"inventeer/operations-web"})
+        self.assertTrue(guard.is_every_path_reserved("inventeer/OPERATIONS-WEB", listed))
+        self.assertFalse(guard.is_every_path_reserved("Inventeer-Management/operations-web", listed))
+
+    def test_a_list_that_cannot_be_read_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(guard.GuardError):
+                guard.load_every_path_repositories(pathlib.Path(tmp) / "missing.txt")
+
+    def test_a_non_reserved_file_fails_in_a_listed_repository(self):
+        listed = guard.is_every_path_reserved("Inventeer/operations-web", guard.load_every_path_repositories())
+        found = run([f("src/app.tsx")], bot=True, every_path=listed)
+        self.assertEqual(rows(found), {guard.ROW_EVERY_PATH})
+        self.assertEqual([x.path for x in found], ["src/app.tsx"])
+
+    def test_the_same_file_passes_in_an_unlisted_repository(self):
+        listed = guard.is_every_path_reserved("Inventeer/sandbox-demo", guard.load_every_path_repositories())
+        self.assertFalse(listed)
+        self.assertEqual(run([f("src/app.tsx")], bot=True, every_path=listed), [])
+
+    def test_a_rename_is_reserved_at_both_places(self):
+        found = run([f("src/new.tsx", "renamed", previous="src/old.tsx")], bot=True, every_path=True)
+        self.assertEqual({x.path for x in found}, {"src/new.tsx", "src/old.tsx"})
+
+    def test_every_row_of_the_table_still_blocks_beside_it(self):
+        owners = "/strategy/ @Inventeer/role-founder\n"
+        cases = {
+            ".github/workflows/ci.yml": guard.ROW_WORKFLOWS,
+            "governance/pre-approvals.md": guard.ROW_PREAPPROVALS,
+            "finance/a.md": guard.ROW_TIER_S,
+            "rules/authoring.md": guard.ROW_HUB_RULES,
+            "strategy/plan.md": guard.ROW_CODEOWNERS_FOUNDER,
+        }
+        for path, row in cases.items():
+            self.assertEqual(rows(run([f(path)], bot=True, codeowners=owners, every_path=True)), {row, guard.ROW_EVERY_PATH}, path)
+        found = rows(run([f("assistants/new.md", "added")], bot=True, every_path=True))
+        self.assertEqual(found, {guard.ROW_ASSISTANTS_FILE, guard.ROW_OWN_MANIFEST, guard.ROW_EVERY_PATH})
+        raised = run(
+            [f("assistants/sample.md")], bot=True, base=BASE_MANIFEST,
+            head=manifest(**{"bot_level: L1": "bot_level: L0"}), every_path=True,
+        )
+        self.assertEqual(rows(raised), {guard.ROW_OWN_MANIFEST, guard.ROW_MANIFEST_FIELD, guard.ROW_EVERY_PATH})
+
+    def test_main_passes_an_unguarded_author_in_a_listed_repository_without_calling_the_api(self):
+        env = {
+            "PR_AUTHOR": "mayconcsantos",
+            "GUARDED_AUTHORS": "clara-foster-inventeer[bot]",
+            "REPO": "Inventeer/operations-web",
+        }
+        self.assertEqual(guard.main(env), 0)
+
+    def test_main_decides_every_path_for_a_guarded_bot_in_a_listed_repository(self):
+        env = {
+            "PR_AUTHOR": "clara-foster-inventeer[bot]",
+            "GUARDED_AUTHORS": "clara-foster-inventeer[bot]",
+            "REPO": "Inventeer/operations-web",
+            "PR_NUMBER": "7",
+            "GH_TOKEN": "x",
+            "HEAD_SHA": "h",
+            "BASE_REF": "main",
+            "FOUNDER_OWNERS": " ".join(FOUNDERS),
+        }
+
+        class FakeGitHub:
+            def __init__(self, repo, token):
+                self.repo = repo
+
+            def paged(self, path):
+                return [f("src/app.tsx")]
+
+            def api(self, method, path, body=None):
+                if path.startswith("/compare/"):
+                    return {"merge_base_commit": {"sha": "b"}}
+                return {"sha": "t"}
+
+            def text(self, path, ref):
+                return None
+
+        blocked = []
+        with mock.patch.object(guard, "GitHub", FakeGitHub), mock.patch.object(
+            guard, "act_on_block", lambda gh, number, author, findings, webhook: blocked.extend(findings)
+        ), mock.patch.object(guard, "clear_label_if_ours", lambda gh, number: None):
+            self.assertEqual(guard.main(env), 1)
+            self.assertEqual(rows(blocked), {guard.ROW_EVERY_PATH})
+            blocked.clear()
+            self.assertEqual(guard.main(dict(env, REPO="Inventeer/sandbox-demo")), 0)
+            self.assertEqual(blocked, [])
+
+    def test_the_block_labels_the_pull_request_and_sends_one_alert(self):
+        calls, alerts = [], []
+
+        class FakeGitHub:
+            repo = "Inventeer/operations-web"
+
+            def api(self, method, path, body=None):
+                calls.append((method, path, body))
+
+            def paged(self, path):
+                return []
+
+        findings = [guard.Finding(guard.ROW_EVERY_PATH, "src/app.tsx")]
+        with mock.patch.object(guard, "post_slack", lambda hook, payload: alerts.append(payload)):
+            guard.act_on_block(FakeGitHub(), "7", "clara-foster-inventeer[bot]", findings, "https://hooks.example/x")
+        self.assertIn(("POST", "/issues/7/labels", {"labels": [guard.LABEL]}), calls)
+        self.assertEqual(guard.LABEL, "founder-review")
+        self.assertEqual(len(alerts), 1)
+        flat = json.dumps(alerts[0])
+        self.assertIn("Inventeer/operations-web", flat)
+        self.assertIn("https://github.com/Inventeer/operations-web/pull/7", flat)
+        self.assertIn("every path of this repository", flat)
+        self.assertIn("src/app.tsx", flat)
 
 
 class Reporting(unittest.TestCase):

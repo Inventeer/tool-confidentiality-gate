@@ -1,0 +1,11 @@
+# Repositories whose every path is reserved for a guarded bot
+# (HUB_Bot_Work_Protocol_Standard, section 2.12, rule 4).
+#
+# In a repository listed here, a pull request of a bot in guarded_authors fails
+# the reserved-guard check on every path it touches, so the founder's merge
+# through the role-founder bypass is his approval. A person's pull request is
+# never held. One repository per line, as owner/name; adding one is a pull
+# request that a Hub owner merges.
+Inventeer/operations-web
+Inventeer/github-actions
+Inventeer/tool-confidentiality-gate

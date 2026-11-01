@@ -20,6 +20,10 @@ What it blocks (the table of section 2.12, rule 2):
      catch-all rule *: it names no path, and the ruleset's code-owner review
      already requires the founder's approval everywhere it applies
 
+In a repository listed in every-path-reserved.txt, beside this file, every path
+a guarded bot's pull request touches is reserved as well (section 2.12, rule 6),
+so the founder's merge through the role-founder bypass is his approval there.
+
 A blocked pull request gets the founder-review label, one comment and one Slack
 alert, and the check fails. The guard merges nothing and approves nothing.
 
@@ -31,7 +35,8 @@ it would stop the team's own work.
 
 Inputs (environment): GH_TOKEN, REPO, PR_NUMBER, BASE_REF, HEAD_SHA, PR_AUTHOR,
 GUARDED_AUTHORS (space separated logins), FOUNDER_OWNERS (space separated),
-SLACK_WEBHOOK_URL (optional).
+SLACK_WEBHOOK_URL (optional). The list of repositories whose every path is
+reserved is read from every-path-reserved.txt, so a caller sets nothing for it.
 Exit code: 0 pass, 1 blocked, 2 the guard could not decide (fails closed).
 """
 
@@ -40,6 +45,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import pathlib
 import re
 import sys
 import urllib.error
@@ -56,6 +62,8 @@ MARKER_AUTHOR = "github-actions[bot]"
 PR_FILES_CAP = 3000
 SLACK_LINES = 12
 
+EVERY_PATH_FILE = pathlib.Path(__file__).resolve().with_name("every-path-reserved.txt")
+
 HUB_ROOT_DIRS = ("finance", "people", "hiring", "contracts", "payments")
 CODEOWNERS_CATCH_ALL = "*"
 
@@ -67,6 +75,7 @@ ROW_MANIFEST_FIELD = "a reserved field of a manifest"
 ROW_TIER_S = "finance, people, hiring, contracts and payments data"
 ROW_HUB_RULES = "Hub rules (AGENTS.md, CLAUDE.md, rules/, HUB_ artifacts)"
 ROW_CODEOWNERS_FOUNDER = "a path a CODEOWNERS rule assigns to the founder"
+ROW_EVERY_PATH = "every path of this repository"
 ROW_UNDECIDABLE = "a change the guard cannot read"
 
 AUTONOMY_ORDER = ("reads", "drafts", "acts with approval", "acts alone")
@@ -243,6 +252,29 @@ def is_guarded(author: str, guarded: list[str]) -> bool:
     return author.strip().lower() in {g.strip().lower() for g in guarded if g.strip()}
 
 
+def every_path_repositories(text: str) -> set[str]:
+    """The owner/name lines of the list, lower-cased; comments and blanks are skipped."""
+    out = set()
+    for raw in text.splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if line:
+            out.add(line.lower())
+    return out
+
+
+def load_every_path_repositories(path: pathlib.Path = EVERY_PATH_FILE) -> set[str]:
+    """The listed repositories; a list that cannot be read fails closed."""
+    try:
+        return every_path_repositories(path.read_text(encoding="utf-8"))
+    except OSError as err:
+        raise GuardError(f"the every-path list cannot be read: {err.__class__.__name__}") from err
+
+
+def is_every_path_reserved(repo: str, listed: set[str]) -> bool:
+    """True when every path of the repository is reserved for a guarded bot."""
+    return repo.strip().lower() in listed
+
+
 def path_findings(f: dict, author_is_bot: bool) -> list[Finding]:
     found: list[Finding] = []
     status = f.get("status", "")
@@ -277,11 +309,14 @@ def evaluate(
     read_base,
     read_head,
     base_codeowners: str | None,
+    every_path: bool = False,
 ) -> list[Finding]:
     """Every reserved row the pull request touches.
 
     read_base(path) and read_head(path) return a file's text at the merge base
-    and at the head, None when the file does not exist there.
+    and at the head, None when the file does not exist there. every_path is True
+    in a repository whose every path is reserved; the rows of the table are still
+    reported beside it.
     """
     found: list[Finding] = []
     if len(files) >= PR_FILES_CAP:
@@ -291,6 +326,8 @@ def evaluate(
 
     for f in files:
         found.extend(path_findings(f, author_is_bot))
+        if every_path:
+            found.extend(Finding(ROW_EVERY_PATH, p) for p in _paths(f))
 
         path = f["filename"]
         parts = path.split("/")
@@ -388,6 +425,15 @@ def alert_text(repo: str, number: str, author: str) -> str:
     return f"Founder review needed: {repo}#{number} by {author}"
 
 
+def _alert_reason(findings: list[Finding]) -> str:
+    if any(item.row == ROW_EVERY_PATH for item in findings):
+        return (
+            "reserved-guard blocked this pull request. The founder reserves "
+            f"{ROW_EVERY_PATH} for a guarded bot."
+        )
+    return "reserved-guard blocked this pull request. It touches a path the founder reserves."
+
+
 def alert_payload(repo: str, number: str, author: str, findings: list[Finding]) -> dict:
     """The Slack card: a title, three fields, the reasons grouped by row and a button."""
     url = _pr_url(repo, number)
@@ -437,12 +483,7 @@ def alert_payload(repo: str, number: str, author: str, findings: list[Finding]) 
             },
             {
                 "type": "context",
-                "elements": [
-                    {
-                        "type": "mrkdwn",
-                        "text": "reserved-guard blocked this pull request. It touches a path the founder reserves.",
-                    }
-                ],
+                "elements": [{"type": "mrkdwn", "text": _alert_reason(findings)}],
             },
         ],
     }
@@ -529,6 +570,7 @@ def main(env=os.environ) -> int:
         head_sha, base_ref = env["HEAD_SHA"], env["BASE_REF"]
         author_is_bot = True  # a guarded author is a bot, so its own manifest is reserved
         founders = env.get("FOUNDER_OWNERS", "").split()
+        every_path = is_every_path_reserved(repo, load_every_path_repositories())
 
         files = gh.paged(f"/pulls/{number}/files")
         base_tip = gh.api("GET", f"/commits/{urllib.parse.quote(base_ref)}")["sha"]
@@ -549,6 +591,7 @@ def main(env=os.environ) -> int:
             lambda p: gh.text(p, merge_base),
             lambda p: gh.text(p, head_sha),
             codeowners,
+            every_path,
         )
     except (GuardError, KeyError, urllib.error.URLError, OSError, ValueError) as err:
         print(f"::error::reserved-guard could not decide: {err.__class__.__name__}: {err}")
