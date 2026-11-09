@@ -104,6 +104,10 @@ jobs:
         env:
           HUB_TOKEN: ${{ steps.hub.outputs.token }}
           HUB_REF: ${{ inputs.hub_ref }}
+        # A shallow fetch of the whole commit, never a partial clone: with
+        # --filter=blob:none the file contents arrive in a second, lazy request
+        # that GitHub sometimes answers 404, and a correct pull request failed.
+        # The fetch is retried before the step fails; the checkout is local.
         run: |
           set -euo pipefail
           basic="$(printf 'x-access-token:%s' "$HUB_TOKEN" | base64 -w0)"
@@ -112,9 +116,20 @@ jobs:
           git -c init.defaultBranch=main init -q hub
           git -C hub remote add origin https://github.com/Inventeer/inventeer-hub.git
           git -C hub sparse-checkout set --no-cone /scripts/
-          if ! git -C hub -c http.extraheader="$auth" fetch -q --depth 1 --no-tags --filter=blob:none origin "$HUB_REF" \
-             || ! git -C hub -c http.extraheader="$auth" -c advice.detachedHead=false checkout -q FETCH_HEAD; then
-            echo "::error::Could not fetch the gate's scripts from the Hub at ref '$HUB_REF'."
+          fetched=false
+          for attempt in 1 2 3; do
+            if git -C hub -c http.extraheader="$auth" fetch -q --depth 1 --no-tags origin "$HUB_REF" \
+               && git -C hub -c advice.detachedHead=false checkout -q FETCH_HEAD; then
+              fetched=true
+              break
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              echo "Download from the Hub failed (attempt $attempt of 3); retrying in $((attempt * 10)) seconds."
+              sleep $((attempt * 10))
+            fi
+          done
+          if [ "$fetched" != true ]; then
+            echo "::error title=Transient download failure, rerun the job::Could not download the gate's scripts from the Hub at ref '$HUB_REF' after 3 attempts. The reader token was issued for the Hub, so this is not a permission problem, and nothing in this pull request caused it: GitHub failed to serve the download. Rerun the failed job. If the rerun fails the same way, check that the ref '$HUB_REF' exists."
             exit 1
           fi
           test -f hub/scripts/confidentiality-gate.py || { echo "::error::The Hub at ref '$HUB_REF' holds no gate script."; exit 1; }

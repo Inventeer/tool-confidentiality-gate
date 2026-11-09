@@ -122,30 +122,40 @@ jobs:
         env:
           HUB_TOKEN: ${{ steps.hub.outputs.token }}
           HUB_REF: ${{ inputs.hub_ref }}
+        # A shallow fetch of the whole commit, never a partial clone: with
+        # --filter=blob:none the file contents arrive in a second, lazy request
+        # that GitHub sometimes answers 404, and a correct pull request failed.
+        # The fetch is retried before the step fails; the checkout is local.
         run: |
           set -euo pipefail
+          level=warning; [ "$MODE" = "block" ] && level=error
           basic="$(printf 'x-access-token:%s' "$HUB_TOKEN" | base64 -w0)"
           echo "::add-mask::$basic"
           auth="AUTHORIZATION: basic $basic"
-          git -c init.defaultBranch=main init -q hub
-          git -C hub remote add origin https://github.com/Inventeer/inventeer-hub.git
-          git -C hub sparse-checkout set --no-cone /scripts/layout-check.py /permanent-artifacts/workspace/HUB_Repo_Layout_Schema.json
-          if ! git -C hub -c http.extraheader="$auth" fetch -q --depth 1 --no-tags --filter=blob:none origin "$HUB_REF" \
-             || ! git -C hub -c http.extraheader="$auth" -c advice.detachedHead=false checkout -q FETCH_HEAD; then
-            echo "::error::Could not fetch the layout check from the Hub at ref '$HUB_REF'."
-            exit 1
-          fi
-          test -f hub/scripts/layout-check.py || { echo "::error::The Hub at ref '$HUB_REF' holds no layout check script."; exit 1; }
+          fetch_files() {  # <dir> <repo> <ref> <path>...
+            local dir="$1" repo="$2" ref="$3" attempt
+            shift 3
+            git -c init.defaultBranch=main init -q "$dir"
+            git -C "$dir" remote add origin "https://github.com/Inventeer/$repo.git"
+            git -C "$dir" sparse-checkout set --no-cone "$@"
+            for attempt in 1 2 3; do
+              if git -C "$dir" -c http.extraheader="$auth" fetch -q --depth 1 --no-tags origin "$ref" \
+                 && git -C "$dir" -c advice.detachedHead=false checkout -q FETCH_HEAD; then
+                return 0
+              fi
+              if [ "$attempt" -lt 3 ]; then
+                echo "Download from Inventeer/$repo failed (attempt $attempt of 3); retrying in $((attempt * 10)) seconds."
+                sleep $((attempt * 10))
+              fi
+            done
+            echo "::$level title=Transient download failure, rerun the job::Could not download the check's files from Inventeer/$repo at ref '$ref' after 3 attempts. The reader token was issued for that repository, so this is not a permission problem, and nothing in this pull request caused it: GitHub failed to serve the download. Rerun the failed job. If the rerun fails the same way, check that the ref '$ref' exists."
+            return 1
+          }
+          fetch_files hub inventeer-hub "$HUB_REF" /scripts/layout-check.py /permanent-artifacts/workspace/HUB_Repo_Layout_Schema.json
+          test -f hub/scripts/layout-check.py || { echo "::$level::The Hub at ref '$HUB_REF' holds no layout check script."; exit 1; }
           echo "Fetched the layout check from the Hub at ref '$HUB_REF'."
-          git -c init.defaultBranch=main init -q shared-ops
-          git -C shared-ops remote add origin https://github.com/Inventeer/shared-ops.git
-          git -C shared-ops sparse-checkout set --no-cone /config/tenant.config.json
-          if ! git -C shared-ops -c http.extraheader="$auth" fetch -q --depth 1 --no-tags --filter=blob:none origin main \
-             || ! git -C shared-ops -c http.extraheader="$auth" -c advice.detachedHead=false checkout -q FETCH_HEAD; then
-            echo "::error::Could not fetch the tenant configuration from shared-ops."
-            exit 1
-          fi
-          test -f shared-ops/config/tenant.config.json || { echo "::error::shared-ops holds no config/tenant.config.json."; exit 1; }
+          fetch_files shared-ops shared-ops main /config/tenant.config.json
+          test -f shared-ops/config/tenant.config.json || { echo "::$level::shared-ops holds no config/tenant.config.json."; exit 1; }
           echo "Fetched the tenant configuration from shared-ops."
 
       - name: Check out the calling repo (full history for the diff base)
@@ -186,5 +196,11 @@ jobs:
 
       - name: Report a check that could not run
         if: steps.guard.outputs.ok == 'true' && steps.fetch.outcome != 'success'
+        env:
+          TOKEN_OUTCOME: ${{ steps.hub.outcome }}
         run: |
-          echo "::warning title=Layout check not run::The Hub reader token or the Hub fetch failed, so this pull request was not checked. Check that this repo can read the variable HUB_READER_APP_ID and the secret HUB_READER_APP_PRIVATE_KEY."
+          if [ "$TOKEN_OUTCOME" != "success" ]; then
+            echo "::warning title=Layout check not run::The Hub reader token could not be minted, so this pull request was not checked. Check that this repo can read the variable HUB_READER_APP_ID and the secret HUB_READER_APP_PRIVATE_KEY."
+          else
+            echo "::warning title=Layout check not run::Downloading the check's files failed, so this pull request was not checked. This is a transient download failure, not a permission or content problem: rerun the failed job."
+          fi
